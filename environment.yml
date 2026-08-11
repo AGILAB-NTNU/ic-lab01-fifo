@@ -30,7 +30,7 @@ dependencies:
   
   # IC Design Tools (新增硬體組專用工具)
   # 使用 conda-forge 安裝 verible，確保全實驗室版本一致
-  - verible=0.0.3755 
+  # - verible=0.0.3755 
   
   - pip:
     # 這裡安裝您的核心套件 (這會根據 pyproject.toml 裡的 dependencies 自動安裝)
