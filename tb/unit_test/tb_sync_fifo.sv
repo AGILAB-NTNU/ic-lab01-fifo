@@ -36,8 +36,9 @@
 module tb_sync_fifo;
 
   // 測試參數設定
-  parameter DATA_WIDTH = 32;
-  parameter DEPTH = 8;
+  parameter int DATA_WIDTH = 32;
+  parameter int DEPTH = 8;
+  parameter int ADDR_WIDTH = $clog2(DEPTH);
 
   // Testbench 訊號宣告
   reg                   clk;

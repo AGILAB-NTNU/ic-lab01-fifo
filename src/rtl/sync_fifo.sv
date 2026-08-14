@@ -33,8 +33,8 @@
 
 
 module sync_fifo #(
-    parameter DATA_WIDTH = 32,  // 資料位元寬度
-    parameter DEPTH      = 8    // FIFO 深度
+    parameter int DATA_WIDTH = 32,  // 資料位元寬度
+    parameter int DEPTH      = 8    // FIFO 深度
 ) (
     input i_clk,   // 系統時脈
     input i_rst_n, // 低準位同步復位
@@ -49,17 +49,17 @@ module sync_fifo #(
 );
 
   // 自動計算定址所需的位元數
-  localparam ADD_WIDTH = $clog2(DEPTH);
+  localparam int AddWidth = $clog2(DEPTH);
 
   // 內部記憶體陣列與指標
-  reg [DATA_WIDTH-1:0] mem_r [0:DEPTH-1];
-  reg [ADD_WIDTH-1:0]  wr_ptr_r;
-  reg [ADD_WIDTH-1:0]  rd_ptr_r;
-  reg [ADD_WIDTH:0]    count_r;
+  reg [DATA_WIDTH-1:0] mem_r [DEPTH];
+  reg [AddWidth-1:0]  wr_ptr_r;
+  reg [AddWidth-1:0]  rd_ptr_r;
+  reg [AddWidth:0]    count_r;
 
   // 組合邏輯判斷 FIFO 的 Empty / Full 狀態
   assign o_empty = (count_r == 0);
-  assign o_full  = (count_r == DEPTH[ADD_WIDTH:0]);
+  assign o_full  = (count_r == DEPTH[AddWidth:0]);
 
   // 正邊緣時脈觸發（改為「同步復位」，移除 negedge i_rst_n）
   always @(posedge i_clk) begin
