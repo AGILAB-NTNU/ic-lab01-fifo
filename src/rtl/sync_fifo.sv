@@ -33,62 +33,64 @@
 
 
 module sync_fifo #(
-    parameter DATA_WIDTH = 32,   // 資料位元寬度
-    parameter DEPTH      = 8     // FIFO 深度
-)(
-    input                      i_clk,     // 系統時脈
-    input                      i_rst_n,   // 低準位同步復位
+    parameter DATA_WIDTH = 32,  // 資料位元寬度
+    parameter DEPTH      = 8    // FIFO 深度
+) (
+    input i_clk,   // 系統時脈
+    input i_rst_n, // 低準位同步復位
 
-    input                      i_wr_en,   // 寫入致能訊號
-    input  [DATA_WIDTH-1:0]    i_din,     // 輸入資料
-    output                     o_full,    // FIFO 滿旗標
+    input                   i_wr_en,  // 寫入致能訊號
+    input  [DATA_WIDTH-1:0] i_din,    // 輸入資料
+    output                  o_full,   // FIFO 滿旗標
 
-    input                      i_rd_en,   // 讀取致能訊號
+    input                       i_rd_en,  // 讀取致能訊號
     output reg [DATA_WIDTH-1:0] o_dout,   // 輸出資料
-    output                     o_empty    // FIFO 空旗標
+    output                      o_empty   // FIFO 空旗標
 );
 
-    // 自動計算定址所需的位元數
-    localparam ADD_WIDTH = $clog2(DEPTH);
+  // 自動計算定址所需的位元數
+  localparam ADD_WIDTH = $clog2(DEPTH);
 
-    // 內部記憶體陣列與指標
-    reg [DATA_WIDTH-1:0] mem_r [0:DEPTH-1]; 
-    reg [ADD_WIDTH-1:0]  wr_ptr_r;          
-    reg [ADD_WIDTH-1:0]  rd_ptr_r;          
-    reg [ADD_WIDTH:0]    count_r;           
+  // 內部記憶體陣列與指標
+  reg [DATA_WIDTH-1:0] mem_r [0:DEPTH-1];
+  reg [ADD_WIDTH-1:0]  wr_ptr_r;
+  reg [ADD_WIDTH-1:0]  rd_ptr_r;
+  reg [ADD_WIDTH:0]    count_r;
 
-    // 組合邏輯判斷 FIFO 的 Empty / Full 狀態
-    assign o_empty = (count_r == 0);          
-    assign o_full  = (count_r == DEPTH[ADD_WIDTH:0]);      
+  // 組合邏輯判斷 FIFO 的 Empty / Full 狀態
+  assign o_empty = (count_r == 0);
+  assign o_full  = (count_r == DEPTH[ADD_WIDTH:0]);
 
-    // 正邊緣時脈觸發（改為「同步復位」，移除 negedge i_rst_n）
-    always @(posedge i_clk) begin
-        if (!i_rst_n) begin
-            // 系統復位：重置指標與計數器
-            wr_ptr_r <= 0;
-            rd_ptr_r <= 0;
-            count_r  <= 0;
-            o_dout   <= 0;
-        end else begin
-            // 寫入邏輯
-            if (i_wr_en && !o_full) begin
-                mem_r[wr_ptr_r] <= i_din;
-                wr_ptr_r        <= wr_ptr_r + 1'b1;
-            end
+  // 正邊緣時脈觸發（改為「同步復位」，移除 negedge i_rst_n）
+  always @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      // 系統復位：重置指標與計數器
+      wr_ptr_r <= 0;
+      rd_ptr_r <= 0;
+      count_r  <= 0;
+      o_dout   <= 0;
+    end else begin
+      // 寫入邏輯
+      if (i_wr_en && !o_full) begin
+        mem_r[wr_ptr_r] <= i_din;
+        wr_ptr_r        <= wr_ptr_r + 1'b1;
+      end
 
-            // 讀取邏輯
-            if (i_rd_en && !o_empty) begin
-                o_dout   <= mem_r[rd_ptr_r];
-                rd_ptr_r <= rd_ptr_r + 1'b1;
-            end
+      // 讀取邏輯
+      if (i_rd_en && !o_empty) begin
+        o_dout   <= mem_r[rd_ptr_r];
+        rd_ptr_r <= rd_ptr_r + 1'b1;
+      end
 
-            // 更新內部資料總筆數
-            case ({i_wr_en && !o_full, i_rd_en && !o_empty})
-                2'b10: count_r <= count_r + 1'b1;
-                2'b01: count_r <= count_r - 1'b1;
-                default: count_r <= count_r;
-            endcase
-        end
+      // 更新內部資料總筆數
+      case ({
+        i_wr_en && !o_full, i_rd_en && !o_empty
+      })
+        2'b10:   count_r <= count_r + 1'b1;
+        2'b01:   count_r <= count_r - 1'b1;
+        default: count_r <= count_r;
+      endcase
     end
+  end
 
 endmodule
