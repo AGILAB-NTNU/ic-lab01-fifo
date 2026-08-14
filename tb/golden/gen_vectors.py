@@ -1,18 +1,18 @@
 import collections
 import random
 
+
 def generate_test_vectors(num_operations=300, depth=8):
     # 使用雙端佇列 (deque) 模擬 FIFO
     fifo = collections.deque()
 
     # 產生輸入向量與 Golden Output
-    with open("input_vectors.hex", "w") as f_in, \
-         open("golden_outputs.hex", "w") as f_gold:
-
+    with open("input_vectors.hex", "w") as f_in, open(
+        "golden_outputs.hex", "w"
+    ) as f_gold:
         for i in range(num_operations):
-
             # 60% Push、40% Pop
-            action = 'push' if random.random() < 0.6 else 'pop'
+            action = "push" if random.random() < 0.6 else "pop"
 
             wr_en = 0
             rd_en = 0
@@ -21,7 +21,7 @@ def generate_test_vectors(num_operations=300, depth=8):
             # -------------------------
             # Push
             # -------------------------
-            if action == 'push':
+            if action == "push":
                 if len(fifo) < depth:
                     wr_en = 1
                     # 32-bit 隨機資料
@@ -46,4 +46,3 @@ def generate_test_vectors(num_operations=300, depth=8):
 
 if __name__ == "__main__":
     generate_test_vectors()
-    
