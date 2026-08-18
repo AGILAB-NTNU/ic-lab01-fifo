@@ -74,6 +74,7 @@ module tb_sync_fifo;
   integer in_file, gold_file;
   integer status_in, status_gold;
   integer expected_dout;
+  integer total_count = 0;
   integer error_count = 0;
   integer match_count = 0;
 
@@ -115,6 +116,9 @@ module tb_sync_fifo;
         status_gold = $fscanf(gold_file, "%h\n", expected_dout);
 
         if (status_in != -1 && status_gold != -1) begin
+
+          total_count = total_count + 1;
+
           if (dout === expected_dout[DATA_WIDTH-1:0]) begin
             $display("[PASS] Read: 0x%08X | Expected: 0x%08X", dout, expected_dout);
             match_count = match_count + 1;
@@ -133,6 +137,7 @@ module tb_sync_fifo;
     // 6. 印出結果
     $display("===========================================");
     $display(" Verification Summary:");
+    $display(" Total Count : %0d", total_count);
     $display(" Total Passed : %0d", match_count);
     $display(" Total Failed : %0d", error_count);
     $display("===========================================");
