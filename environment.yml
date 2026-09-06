@@ -1,4 +1,4 @@
-name: agilab_env
+name: agilab_ic_env
 channels:
   - pytorch
   - nvidia
@@ -17,10 +17,10 @@ dependencies:
   - matplotlib~=3.8
   
   # PyTorch & CUDA
-  - pytorch=2.3.1
-  - torchvision=0.18.1
-  - torchaudio=2.3.1
-  - pytorch-cuda=12.1
+  #- pytorch=2.3.1
+  # - torchvision=0.18.1
+  # - torchaudio=2.3.1
+  # - pytorch-cuda=12.1
 
   # Development & Coding Style
   - pre-commit=3.7.1
