@@ -30,12 +30,8 @@ def run() -> None:
     tile_size = 32
 
     # 1. 隨機生成大矩陣
-    mat_a = [
-        [random.randint(-128, 127) for _ in range(dim_k)] for _ in range(dim_m)
-    ]
-    mat_b = [
-        [random.randint(-128, 127) for _ in range(dim_n)] for _ in range(dim_k)
-    ]
+    mat_a = [[random.randint(-128, 127) for _ in range(dim_k)] for _ in range(dim_m)]
+    mat_b = [[random.randint(-128, 127) for _ in range(dim_n)] for _ in range(dim_k)]
 
     # 2. 計算大矩陣乘法 Golden C (64x64)
     mat_c = [[0] * dim_n for _ in range(dim_m)]
