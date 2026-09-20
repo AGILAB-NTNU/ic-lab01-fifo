@@ -229,9 +229,10 @@ module tile_controller #(
     // 動態幾何維度傳遞
     assign o_m_base       = '0;
     assign o_n_base       = '0;
-    assign o_active_rows  = (reg_m_r > S_MAX) ? S_MAX[$clog2(S_MAX+1)-1:0] : reg_m_r[$clog2(S_MAX+1)-1:0];
-    assign o_active_cols  = (reg_n_r > S_MAX) ? S_MAX[$clog2(S_MAX+1)-1:0] : reg_n_r[$clog2(S_MAX+1)-1:0];
+    assign o_active_rows  = (reg_m_r > S_MAX) ?
+    S_MAX[$clog2(S_MAX+1)-1:0] : reg_m_r[$clog2(S_MAX+1)-1:0];
+    assign o_active_cols  = (reg_n_r > S_MAX) ?
+    S_MAX[$clog2(S_MAX+1)-1:0] : reg_n_r[$clog2(S_MAX+1)-1:0];
 
 endmodule
-
 

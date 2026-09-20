@@ -138,5 +138,5 @@ module systolic_array #(
             assign o_drain_data[c_out] = drain_chain[S_MAX][c_out];
         end
     endgenerate
-    
+
 endmodule
