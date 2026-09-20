@@ -45,7 +45,7 @@ module tb_systolic_tiling_s32;
     parameter int MAX_M          = 256;
     parameter int MAX_K          = 256;
     parameter int MAX_N          = 64;
-    parameter int FIFO_DEPTH     = 16;
+    parameter int FIFO_DEPTH     = 32;
     parameter int DATA_WIDTH     = 8;
     parameter int PRODUCT_WIDTH  = 16;
     parameter int ACC_WIDTH      = 32;
@@ -56,8 +56,7 @@ module tb_systolic_tiling_s32;
     parameter int BIG_K         = 32;
     parameter int BIG_N         = 64;
     parameter int NUM_TILES     = 4;
-    parameter int TOTAL_C_ELEMS = BIG_M * BIG_N; // 4096 筆
-
+    parameter int TOTAL_C_ELEMS = BIG_M * BIG_N; // 4,096 筆
     // -------------------------------------------------------------
     // DUT 介面訊號
     // -------------------------------------------------------------
@@ -77,7 +76,8 @@ module tb_systolic_tiling_s32;
     logic [S_MAX-1:0][DATA_WIDTH-1:0]   b_wdata;
     logic [S_MAX-1:0]                   b_full;
 
-    logic signed [OUT_DATA_WIDTH-1:0]   result_data;
+    // 升級：32 通道並行結果輸出 (每拍一整列 32 個 INT8)
+    logic signed [OUT_DATA_WIDTH-1:0]   result_data [S_MAX];
     logic                               result_vld;
     logic                               result_rdy;
     logic [$clog2(MAX_M+1)-1:0]         c_row;
@@ -90,13 +90,13 @@ module tb_systolic_tiling_s32;
     // 測資與比對陣列 (顯式宣告相容 xvlog)
     // -------------------------------------------------------------
     // verilog_lint: waive-start unpacked-dimensions-range-ordering
-    logic signed [DATA_WIDTH-1:0] hex_mem_a [0:NUM_TILES*1024-1];
-    logic signed [DATA_WIDTH-1:0] hex_mem_b [0:NUM_TILES*1024-1];
-    logic signed [DATA_WIDTH-1:0] hex_gold_c[0:NUM_TILES*1024-1];
+    logic signed [DATA_WIDTH-1:0] hex_mem_a  [0:NUM_TILES*1024-1];
+    logic signed [DATA_WIDTH-1:0] hex_mem_b  [0:NUM_TILES*1024-1];
+    logic signed [DATA_WIDTH-1:0] hex_gold_c [0:NUM_TILES*1024-1];
 
     // 當前 Tile 資料暫存
-    logic signed [DATA_WIDTH-1:0] tile_a    [0:S_MAX-1][0:S_MAX-1];
-    logic signed [DATA_WIDTH-1:0] tile_b    [0:S_MAX-1][0:S_MAX-1];
+    logic signed [DATA_WIDTH-1:0] tile_a     [0:S_MAX-1][0:S_MAX-1];
+    logic signed [DATA_WIDTH-1:0] tile_b     [0:S_MAX-1][0:S_MAX-1];
 
     // 最終拼裝的大矩陣 C (64x64)
     logic signed [DATA_WIDTH-1:0] assembled_c [0:BIG_M-1][0:BIG_N-1];
@@ -114,7 +114,7 @@ module tb_systolic_tiling_s32;
     end
 
     // -------------------------------------------------------------
-    // DUT 例化
+    // DUT 例化 (32 條並行通道)
     // -------------------------------------------------------------
     systolic_top #(
         .S_MAX          (S_MAX),
@@ -170,14 +170,13 @@ module tb_systolic_tiling_s32;
     endtask
 
     // -------------------------------------------------------------
-    // 單一 Tile 計算並接收回填至 assembled_c
+    // 單一 Tile 計算並接收回填至 assembled_c (32 拍高速完成)
     // -------------------------------------------------------------
     task automatic run_single_tile(
         input int tm_idx,
         input int tn_idx
     );
-        int drain_idx;
-        int local_r, local_c;
+        int r_cnt;
         int global_r, global_c;
 
         $display(">> Starting Tile (%0d, %0d) Execution...", tm_idx, tn_idx);
@@ -192,7 +191,7 @@ module tb_systolic_tiling_s32;
         cmd_vld      <= 1'b0;
 
         fork
-            // 寫入 A FIFO (32 通道)
+            // 寫入 A FIFO (32 通道並行)
             begin
                 for (int step = 0; step < S_MAX; step++) begin
                     @(posedge clk);
@@ -207,7 +206,7 @@ module tb_systolic_tiling_s32;
                 a_wdata <= '0;
             end
 
-            // 寫入 B FIFO (32 通道)
+            // 寫入 B FIFO (32 通道並行)
             begin
                 for (int step = 0; step < S_MAX; step++) begin
                     @(posedge clk);
@@ -222,28 +221,26 @@ module tb_systolic_tiling_s32;
                 b_wdata <= '0;
             end
 
-            // 接收結果並依照 (tm_idx, tn_idx) 拼裝回大矩陣
+            // 接收結果：每拍吐出一整列 (32 個 INT8)，總共僅需 32 拍即可收完
             begin
-                drain_idx = 0;
-                while (drain_idx < (S_MAX * S_MAX)) begin
+                r_cnt = 0;
+                while (r_cnt < S_MAX) begin
                     @(posedge clk);
                     result_rdy <= 1'b1;
 
                     if (result_vld && result_rdy) begin
-                        local_r = drain_idx / S_MAX;
-                        local_c = drain_idx % S_MAX;
-
-                        global_r = tm_idx * S_MAX + local_r;
-                        global_c = tn_idx * S_MAX + local_c;
-
-                        assembled_c[global_r][global_c] = result_data;
-                        drain_idx++;
+                        global_r = tm_idx * S_MAX + r_cnt;
+                        for (int c_idx = 0; c_idx < S_MAX; c_idx++) begin
+                            global_c = tn_idx * S_MAX + c_idx;
+                            assembled_c[global_r][global_c] = result_data[c_idx];
+                        end
+                        r_cnt++;
                     end
                 end
             end
         join
 
-        // 等候硬體舉起 done 完成握手
+        // 等候硬體舉起 done 完成交握
         while (!dut_done) @(posedge clk);
         @(posedge clk);
         $display("   Tile (%0d, %0d) completed successfully.", tm_idx, tn_idx);
@@ -256,10 +253,10 @@ module tb_systolic_tiling_s32;
         int tile_cnt;
         logic signed [DATA_WIDTH-1:0] exp_val;
 
-        // 1. 讀取測資
-        $readmemh("C:/github/ic-lab01-fifo/tb/patterns/tiling_input_a.hex", hex_mem_a);
-        $readmemh("C:/github/ic-lab01-fifo/tb/patterns/tiling_input_b.hex", hex_mem_b);
-        $readmemh("C:/github/ic-lab01-fifo/tb/patterns/tiling_golden_c.hex", hex_gold_c);
+        // 1. 讀取測資 (使用標準相對路徑)
+        $readmemh("../patterns/tiling_input_a.hex", hex_mem_a);
+        $readmemh("../patterns/tiling_input_b.hex", hex_mem_b);
+        $readmemh("../patterns/tiling_golden_c.hex", hex_gold_c);
 
         reset_dut();
 
@@ -296,7 +293,7 @@ module tb_systolic_tiling_s32;
                         if (assembled_c[tm * 32 + r][tn * 32 + c] === exp_val) begin
                             total_matches++;
                         end else begin
-                            total_errors++;
+                        total_errors++;
                     $display("[ERROR] Mismatch at Big Matrix (R:%0d, C:%0d) | Got: %d, Exp: %d",
                                      tm * 32 + r, tn * 32 + c,
                                      $signed(assembled_c[tm * 32 + r][tn * 32 + c]), exp_val);

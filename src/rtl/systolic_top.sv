@@ -45,48 +45,49 @@ module systolic_top #(
     parameter integer ACC_WIDTH      = 32,
     parameter integer OUT_DATA_WIDTH = 8
 )(
-    // 系統時脈與重置訊號
+    // 系統時脈與同步重置訊號 (遵循 AGILAB 規範：僅 posedge i_clk 採樣)
     input  logic i_clk,
     input  logic i_rst_n,
 
     // 任務指令介面 (Command)
-    input  logic                             i_cmd_vld,
-    output logic                             o_cmd_rdy,
-    input  logic [$clog2(MAX_M+1)-1:0]       i_matrix_m,
-    input  logic [$clog2(MAX_K+1)-1:0]       i_matrix_k,
-    input  logic [$clog2(MAX_N+1)-1:0]       i_matrix_n,
+    input  logic                                 i_cmd_vld,
+    output logic                                 o_cmd_rdy,
+    input  logic [$clog2(MAX_M+1)-1:0]           i_matrix_m,
+    input  logic [$clog2(MAX_K+1)-1:0]           i_matrix_k,
+    input  logic [$clog2(MAX_N+1)-1:0]           i_matrix_n,
 
     // 矩陣 A 輸入介面 (Stream In)
-    input  logic [S_MAX-1:0]                 i_a_wren,
-    input  logic [S_MAX-1:0][DATA_WIDTH-1:0] i_a_wdata,
-    output logic [S_MAX-1:0]                 o_a_full,
+    input  logic [S_MAX-1:0]                     i_a_wren,
+    input  logic [S_MAX-1:0][DATA_WIDTH-1:0]     i_a_wdata,
+    output logic [S_MAX-1:0]                     o_a_full,
 
     // 矩陣 B 輸入介面 (Stream In)
-    input  logic [S_MAX-1:0]                 i_b_wren,
-    input  logic [S_MAX-1:0][DATA_WIDTH-1:0] i_b_wdata,
-    output logic [S_MAX-1:0]                 o_b_full,
+    input  logic [S_MAX-1:0]                     i_b_wren,
+    input  logic [S_MAX-1:0][DATA_WIDTH-1:0]     i_b_wdata,
+    output logic [S_MAX-1:0]                     o_b_full,
 
-    // 矩陣 C 結果輸出介面 (INT8 Saturated Stream Out)
-    output logic signed [OUT_DATA_WIDTH-1:0] o_result_data,
-    output logic                             o_result_vld,
-    input  logic                             i_result_rdy,
-    output logic [$clog2(MAX_M+1)-1:0]       o_c_row,
-    output logic [$clog2(MAX_N+1)-1:0]       o_c_col,
-    output logic                             o_tile_last,
+    // 矩陣 C 結果輸出介面 (32 通道並行 INT8 飽和輸出，每拍 256-bit，32 拍排空整座陣列)
+    output logic signed [OUT_DATA_WIDTH-1:0]     o_result_data [S_MAX],
+    output logic                                 o_result_vld,
+    input  logic                                 i_result_rdy,
+    output logic [$clog2(MAX_M+1)-1:0]           o_c_row,
+    output logic [$clog2(MAX_N+1)-1:0]           o_c_col,
+    output logic                                 o_tile_last,
 
     // 狀態指示訊號
     output logic o_busy,
     output logic o_done
 );
 
-    // 區域參數定義
-    localparam integer PEIDXW = (S_MAX <= 1) ? 1 : $clog2(S_MAX);
-
-    // 控制訊號連線
+    // -------------------------------------------------------------
+    // 內部控制與握手訊號
+    // -------------------------------------------------------------
     logic step_en;
     logic clr_acc;
     logic clr_skew;
     logic fifo_rden;
+    logic snapshot;   // 快照脈衝 (tile_controller -> systolic_array)
+    logic drain_en;   // 移位致能 (result_drain -> systolic_array)
 
     logic a_fifo_all_rdy;
     logic b_fifo_all_rdy;
@@ -103,18 +104,16 @@ module systolic_top #(
     logic [S_MAX-1:0][DATA_WIDTH-1:0] a_fifo_rdata;
     logic [S_MAX-1:0][DATA_WIDTH-1:0] b_fifo_rdata;
 
-    // Skew 模組輸入陣列轉換
+    // Skew 模組輸入陣列轉換 (Packed -> Unpacked)
     logic signed [DATA_WIDTH-1:0] a_unskewed [S_MAX];
     logic signed [DATA_WIDTH-1:0] b_unskewed [S_MAX];
 
-    // Skew 輸出至 Systolic Array 之連線
+    // Skew 輸出至 Systolic Array 之斜波前連線
     logic signed [DATA_WIDTH-1:0] a_skewed [S_MAX];
     logic signed [DATA_WIDTH-1:0] b_skewed [S_MAX];
 
-    // Systolic Array 累加器讀取連線
-    logic [PEIDXW-1:0]           pe_rd_row;
-    logic [PEIDXW-1:0]           pe_rd_col;
-    logic signed [ACC_WIDTH-1:0] pe_rd_acc_data;
+    // Systolic Array 底部 32 條並行排空移位匯流排 (送往 result_drain)
+    logic signed [ACC_WIDTH-1:0]  drain_chain_data [S_MAX];
 
     // 資料型態轉換 (Packed -> Unpacked)
     genvar idx;
@@ -125,7 +124,9 @@ module systolic_top #(
         end
     endgenerate
 
-    // 1. Tile 控制器
+    // -------------------------------------------------------------
+    // 1. Tile 排程控制器 (支援快照觸發與單磚計算)
+    // -------------------------------------------------------------
     tile_controller #(
         .S_MAX (S_MAX),
         .MAX_M (MAX_M),
@@ -145,6 +146,7 @@ module systolic_top #(
         .o_clr_acc     (clr_acc),
         .o_clr_skew    (clr_skew),
         .o_fifo_rden   (fifo_rden),
+        .o_snapshot    (snapshot),
         .o_drain_start (drain_start),
         .i_drain_done  (drain_done),
         .o_m_base      (m_base),
@@ -155,7 +157,9 @@ module systolic_top #(
         .o_done        (o_done)
     );
 
+    // -------------------------------------------------------------
     // 2. 矩陣 A FIFO 緩衝陣列
+    // -------------------------------------------------------------
     fifo_bank #(
         .NUM_LANES  (S_MAX),
         .DATA_WIDTH (DATA_WIDTH),
@@ -175,7 +179,9 @@ module systolic_top #(
         .o_all_empty (/* unused */)
     );
 
+    // -------------------------------------------------------------
     // 3. 矩陣 B FIFO 緩衝陣列
+    // -------------------------------------------------------------
     fifo_bank #(
         .NUM_LANES  (S_MAX),
         .DATA_WIDTH (DATA_WIDTH),
@@ -195,7 +201,9 @@ module systolic_top #(
         .o_all_empty (/* unused */)
     );
 
-    // 4. 矩陣 A 傾斜延遲對齊 (連接 i_fifo_rden 補零)
+    // -------------------------------------------------------------
+    // 4. 矩陣 A 傾斜延遲對齊 (Skew 佇列)
+    // -------------------------------------------------------------
     input_skew #(
         .NUM_LANES  (S_MAX),
         .DATA_WIDTH (DATA_WIDTH)
@@ -209,7 +217,9 @@ module systolic_top #(
         .o_skew_data (a_skewed)
     );
 
-    // 5. 矩陣 B 傾斜延遲對齊 (連接 i_fifo_rden 補零)
+    // -------------------------------------------------------------
+    // 5. 矩陣 B 傾斜延遲對齊 (Skew 佇列)
+    // -------------------------------------------------------------
     input_skew #(
         .NUM_LANES  (S_MAX),
         .DATA_WIDTH (DATA_WIDTH)
@@ -223,25 +233,29 @@ module systolic_top #(
         .o_skew_data (b_skewed)
     );
 
-    // 6. 2D 脈動陣列核心
+    // -------------------------------------------------------------
+    // 6. 2D 脈動陣列核心 (雙緩衝影子暫存器 + 垂直移位排空鏈)
+    // -------------------------------------------------------------
     systolic_array #(
         .S_MAX         (S_MAX),
         .DATA_WIDTH    (DATA_WIDTH),
         .PRODUCT_WIDTH (PRODUCT_WIDTH),
         .ACC_WIDTH     (ACC_WIDTH)
     ) u_systolic_array (
-        .i_clk         (i_clk),
-        .i_rst_n       (i_rst_n),
-        .i_clr_acc     (clr_acc),
-        .i_step_en     (step_en),
-        .i_a_skew      (a_skewed),
-        .i_b_skew      (b_skewed),
-        .i_rd_row      (pe_rd_row),
-        .i_rd_col      (pe_rd_col),
-        .o_rd_acc_data (pe_rd_acc_data)
+        .i_clk        (i_clk),
+        .i_rst_n      (i_rst_n),
+        .i_clr_acc    (clr_acc),
+        .i_step_en    (step_en),
+        .i_snapshot   (snapshot),
+        .i_drain_en   (drain_en),
+        .i_a_skew     (a_skewed),
+        .i_b_skew     (b_skewed),
+        .o_drain_data (drain_chain_data)
     );
 
-    // 7. 結果讀出與 INT8 飽和輸出模組
+    // -------------------------------------------------------------
+    // 7. 並行結果讀出與 INT8 飽和輸出模組 (32 組硬體 Saturator)
+    // -------------------------------------------------------------
     result_drain #(
         .S_MAX          (S_MAX),
         .MAX_M          (MAX_M),
@@ -249,24 +263,23 @@ module systolic_top #(
         .ACC_WIDTH      (ACC_WIDTH),
         .OUT_DATA_WIDTH (OUT_DATA_WIDTH)
     ) u_result_drain (
-        .i_clk         (i_clk),
-        .i_rst_n       (i_rst_n),
-        .i_drain_start (drain_start),
-        .i_m_base      (m_base),
-        .i_n_base      (n_base),
-        .i_active_rows (active_rows),
-        .i_active_cols (active_cols),
-        .o_pe_row      (pe_rd_row),
-        .o_pe_col      (pe_rd_col),
-        .i_pe_acc_data (pe_rd_acc_data),
-        .o_result_data (o_result_data),
-        .o_result_vld  (o_result_vld),
-        .i_result_rdy  (i_result_rdy),
-        .o_c_row       (o_c_row),
-        .o_c_col       (o_c_col),
-        .o_tile_last   (o_tile_last),
-        .o_busy        (/* unused */),
-        .o_drain_done  (drain_done)
+        .i_clk          (i_clk),
+        .i_rst_n        (i_rst_n),
+        .i_drain_start  (drain_start),
+        .i_m_base       (m_base),
+        .i_n_base       (n_base),
+        .i_active_rows  (active_rows),
+        .i_active_cols  (active_cols),
+        .o_drain_en     (drain_en),
+        .i_drain_data   (drain_chain_data),
+        .o_result_data  (o_result_data),
+        .o_result_vld   (o_result_vld),
+        .i_result_rdy   (i_result_rdy),
+        .o_c_row        (o_c_row),
+        .o_c_col        (o_c_col),
+        .o_tile_last    (o_tile_last),
+        .o_busy         (/* unused */),
+        .o_drain_done   (drain_done)
     );
 
 endmodule

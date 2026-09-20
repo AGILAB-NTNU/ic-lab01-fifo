@@ -73,7 +73,8 @@ module tb_systolic_corner_s4;
     logic [S_MAX-1:0][DATA_WIDTH-1:0]           b_wdata;
     logic [S_MAX-1:0]                           b_full;
 
-    logic signed [OUT_DATA_WIDTH-1:0]           result_data;
+    // 新架構：4 通道並行輸出 (每拍吐一整列 4 個 INT8)
+    logic signed [OUT_DATA_WIDTH-1:0]           result_data [S_MAX];
     logic                                       result_vld;
     logic                                       result_rdy;
     logic [$clog2(MAX_M+1)-1:0]                 c_row;
@@ -107,7 +108,7 @@ module tb_systolic_corner_s4;
     end
 
     // -------------------------------------------------------------
-    // DUT 例化 (對齊 systolic_top FIFO 埠規範)
+    // DUT 例化 (對齊 systolic_top 埠定義)
     // -------------------------------------------------------------
     systolic_top #(
         .S_MAX          (S_MAX),
@@ -164,7 +165,7 @@ module tb_systolic_corner_s4;
     endtask
 
     // -------------------------------------------------------------
-    // 矩陣運算與驗證任務
+    // 矩陣運算與驗證任務 (並行接收)
     // -------------------------------------------------------------
     task automatic run_and_verify(
         input string tc_name,
@@ -173,8 +174,7 @@ module tb_systolic_corner_s4;
         input int    n,
         input int    backpressure_prob
     );
-        int drain_idx;
-        int exp_r, exp_c;
+        int r_cnt;
         logic signed [DATA_WIDTH-1:0] exp_val;
 
         $display("\n==================================================");
@@ -224,27 +224,26 @@ module tb_systolic_corner_s4;
                 b_wdata <= '0;
             end
 
-            // 接收結果並比對
+            // 接收結果並進行 4-Lane 並行比對 (只需 m 拍，即 4 拍收工)
             begin
-                drain_idx = 0;
-                while (drain_idx < (m * n)) begin
+                r_cnt = 0;
+                while (r_cnt < m) begin
                     @(posedge clk);
                     result_rdy <= ($urandom_range(1, 100) > backpressure_prob);
 
                     if (result_vld && result_rdy) begin
-                        exp_r   = drain_idx / n;
-                        exp_c   = drain_idx % n;
-                        exp_val = golden_c[exp_r][exp_c];
-
-                        if (result_data === exp_val) begin
-                            total_matches++;
-                        end else begin
-                            total_errors++;
-                            $display("[ERROR] Mismatch at %0d (R:%0d, C:%0d) | Got: %d, Exp: %d",
-                                     drain_idx, exp_r, exp_c,
-                                     $signed(result_data), exp_val);
+                        for (int c_idx = 0; c_idx < n; c_idx++) begin
+                            exp_val = golden_c[r_cnt][c_idx];
+                            if (result_data[c_idx] === exp_val) begin
+                                total_matches++;
+                            end else begin
+                                total_errors++;
+                                $display("[ERROR] Mismatch at Row %0d, Col %0d | Got: %d, Exp: %d",
+                                         r_cnt, c_idx,
+                                         $signed(result_data[c_idx]), exp_val);
+                            end
                         end
-                        drain_idx++;
+                        r_cnt++;
                     end
                 end
                 result_rdy <= 1'b1;
@@ -258,10 +257,10 @@ module tb_systolic_corner_s4;
     // 主測試流程
     // -------------------------------------------------------------
     initial begin
-        // 1. 使用絕對路徑讀取專屬 S=4 特徵測資
-        $readmemh("C:/github/ic-lab01-fifo/tb/patterns/s4_input_a.hex", hex_mem_a);
-        $readmemh("C:/github/ic-lab01-fifo/tb/patterns/s4_input_b.hex", hex_mem_b);
-        $readmemh("C:/github/ic-lab01-fifo/tb/patterns/s4_golden_c.hex", hex_golden_c);
+        // 1. 讀取專屬 S=4 特徵測資 (相對路徑)
+        $readmemh("../patterns/s4_input_a.hex", hex_mem_a);
+        $readmemh("../patterns/s4_input_b.hex", hex_mem_b);
+        $readmemh("../patterns/s4_golden_c.hex", hex_golden_c);
 
         reset_dut();
 
@@ -285,15 +284,14 @@ module tb_systolic_corner_s4;
             endcase
         end
 
-        // 3. 輸出總結報告 (折行排版符合 Linter < 100 字元規範)
+        // 3. 輸出總結報告
         $display("\n==================================================");
         $display("          S=4 CORNER TEST REPORT                  ");
         $display("==================================================");
         $display("Total Matches : %0d", total_matches);
         $display("Total Errors  : %0d", total_errors);
         if (total_errors == 0 && total_matches == TOTAL_ELEMENTS) begin
-            $display(">> [TEST PASSED] All %0d corner cases (80 elements) verified! <<",
-                     TOTAL_PATTERNS);
+            $display(">> [TEST PASSED] All %0d corner cases (80 elements) verified! <<", TOTAL_PATTERNS);
         end else begin
             $display(">> [TEST FAILED] Simulation finished with errors! <<");
         end
@@ -303,3 +301,4 @@ module tb_systolic_corner_s4;
     end
 
 endmodule
+

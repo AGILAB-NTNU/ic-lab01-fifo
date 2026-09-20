@@ -44,7 +44,7 @@ module tb_systolic_stress_s32;
     parameter int MAX_M          = 256;
     parameter int MAX_K          = 256;
     parameter int MAX_N          = 64;
-    parameter int FIFO_DEPTH     = 16;
+    parameter int FIFO_DEPTH     = 32;
     parameter int DATA_WIDTH     = 8;
     parameter int PRODUCT_WIDTH  = 16;
     parameter int ACC_WIDTH      = 32;
@@ -57,6 +57,7 @@ module tb_systolic_stress_s32;
     // -------------------------------------------------------------
     logic                                       clk;
     logic                                       rst_n;
+
     logic                                       cmd_vld;
     logic                                       cmd_rdy;
     logic [$clog2(MAX_M+1)-1:0]                 cmd_matrix_m;
@@ -71,7 +72,8 @@ module tb_systolic_stress_s32;
     logic [S_MAX-1:0][DATA_WIDTH-1:0]           b_wdata;
     logic [S_MAX-1:0]                           b_full;
 
-    logic signed [OUT_DATA_WIDTH-1:0]           result_data;
+    // 升級：32 通道並行結果輸出 (每拍吐一整列 32 個 INT8)
+    logic signed [OUT_DATA_WIDTH-1:0]           result_data [S_MAX];
     logic                                       result_vld;
     logic                                       result_rdy;
     logic [$clog2(MAX_M+1)-1:0]                 c_row;
@@ -105,7 +107,7 @@ module tb_systolic_stress_s32;
     end
 
     // -------------------------------------------------------------
-    // DUT 例化 (32 條平行通道)
+    // DUT 例化 (32 條並行通道)
     // -------------------------------------------------------------
     systolic_top #(
         .S_MAX          (S_MAX),
@@ -155,13 +157,14 @@ module tb_systolic_stress_s32;
         b_wren       = '0;
         b_wdata      = '0;
         result_rdy   = 1'b1;
+
         repeat (5) @(posedge clk);
         rst_n = 1'b1;
         repeat (2) @(posedge clk);
     endtask
 
     // -------------------------------------------------------------
-    // 矩陣運算與驗證任務
+    // 矩陣運算與驗證任務 (並行接收)
     // -------------------------------------------------------------
     task automatic run_and_verify(
         input string tc_name,
@@ -170,13 +173,13 @@ module tb_systolic_stress_s32;
         input int    n,
         input int    backpressure_prob
     );
-        int drain_idx;
-        int exp_r, exp_c;
+        int r_cnt;
         logic signed [DATA_WIDTH-1:0] exp_val;
 
         $display("[TC Start] %s (Dim: %0dx%0dx%0d, BP: %0d%%)",
                  tc_name, m, k_dim, n, backpressure_prob);
 
+        // 1. 發送運算尺寸指令
         @(posedge clk);
         while (!cmd_rdy) @(posedge clk);
         cmd_vld      <= 1'b1;
@@ -186,8 +189,9 @@ module tb_systolic_stress_s32;
         @(posedge clk);
         cmd_vld      <= 1'b0;
 
+        // 2. 驅動資料寫入並接收輸出
         fork
-            // 寫入 A FIFO (32 通道)
+            // 寫入 A FIFO (32 通道並行)
             begin
                 for (int step = 0; step < k_dim; step++) begin
                     @(posedge clk);
@@ -202,7 +206,7 @@ module tb_systolic_stress_s32;
                 a_wdata <= '0;
             end
 
-            // 寫入 B FIFO (32 通道)
+            // 寫入 B FIFO (32 通道並行)
             begin
                 for (int step = 0; step < k_dim; step++) begin
                     @(posedge clk);
@@ -217,27 +221,26 @@ module tb_systolic_stress_s32;
                 b_wdata <= '0;
             end
 
-            // 接收與比對輸出 (每組 1024 筆)
+            // 接收與比對輸出：每拍吐出一整列 (32 個 INT8)，只需 m 拍 (32 拍收工)
             begin
-                drain_idx = 0;
-                while (drain_idx < (m * n)) begin
+                r_cnt = 0;
+                while (r_cnt < m) begin
                     @(posedge clk);
                     result_rdy <= ($urandom_range(1, 100) > backpressure_prob);
 
                     if (result_vld && result_rdy) begin
-                        exp_r   = drain_idx / n;
-                        exp_c   = drain_idx % n;
-                        exp_val = golden_c[exp_r][exp_c];
-
-                        if (result_data === exp_val) begin
-                            total_matches++;
-                        end else begin
-                            total_errors++;
-                         $display("[ERROR] Iter mismatch at %0d (R:%0d, C:%0d) | Got: %d, Exp: %d",
-                                     drain_idx, exp_r, exp_c,
-                                     $signed(result_data), exp_val);
+                        for (int c_idx = 0; c_idx < n; c_idx++) begin
+                            exp_val = golden_c[r_cnt][c_idx];
+                            if (result_data[c_idx] === exp_val) begin
+                                total_matches++;
+                            end else begin
+                                total_errors++;
+                                $display("[ERROR] Mismatch at Row %0d, Col %0d | Got: %d, Exp: %d",
+                                         r_cnt, c_idx,
+                                         $signed(result_data[c_idx]), exp_val);
+                            end
                         end
-                        drain_idx++;
+                        r_cnt++;
                     end
                 end
                 result_rdy <= 1'b1;
@@ -246,16 +249,17 @@ module tb_systolic_stress_s32;
     endtask
 
     // -------------------------------------------------------------
-    // 主測試流程 (讀取絕對路徑測資，執行 100 組全規格壓測)
+    // 主測試流程 (讀取測資，執行 100 組全規格壓測)
     // -------------------------------------------------------------
     initial begin
-        // 使用完整絕對路徑，確保 Vivado xsim 順利載入測資
-        $readmemh("C:/github/ic-lab01-fifo/tb/patterns/s32_input_a.hex", hex_mem_a);
-        $readmemh("C:/github/ic-lab01-fifo/tb/patterns/s32_input_b.hex", hex_mem_b);
-        $readmemh("C:/github/ic-lab01-fifo/tb/patterns/s32_golden_c.hex", hex_golden_c);
+        // 使用相對路徑載入測資
+        $readmemh("../patterns/s32_input_a.hex", hex_mem_a);
+        $readmemh("../patterns/s32_input_b.hex", hex_mem_b);
+        $readmemh("../patterns/s32_golden_c.hex", hex_golden_c);
 
         reset_dut();
 
+        // 連續執行 100 組全規格 32x32 測試
         for (int p = 0; p < TOTAL_PATTERNS; p++) begin
             for (int r = 0; r < S_MAX; r++) begin
                 for (int c = 0; c < S_MAX; c++) begin
@@ -275,7 +279,7 @@ module tb_systolic_stress_s32;
             end
         end
 
-        // 輸出總結報告 (折行排版符合 Linter < 100 字元規範)
+        // 輸出總結報告
         $display("\n==================================================");
         $display("          S=32 STRESS TEST REPORT                 ");
         $display("==================================================");
